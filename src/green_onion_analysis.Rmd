@@ -1,0 +1,702 @@
+---
+title: "Green Onion EDA & Variance Analysis"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    df_print: paged
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 5)
+```
+
+# 1. Setup
+
+```{r libraries}
+# Core
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Helpers used in functions below
+library(stringr)   # str_extract, str_to_title
+library(forcats)   # fct_explicit_na
+library(rlang)     # ensym, as_label
+library(scales)    # percent_format
+library(knitr)     # kable
+```
+
+------------------------------------------------------------------------
+
+# 2. Data load & light cleaning
+
+```{r load-clean}
+# Load
+raw <- read_csv("data/final_dataset.csv", show_col_types = FALSE) 
+                                                                                   
+# Ensure numeric-typed columns for computable fields (safe even if already numeric)
+tmp <- raw %>%
+  mutate(
+    leaf_color_num = as.numeric(leaf_color),
+    bulb_color_num = as.numeric(bulb_color),
+    tip_num        = as.numeric(tip),
+    dead_leaf_num  = as.numeric(dead_leaf),
+    freshness_num  = as.numeric(freshness)
+  )
+
+# Recompute freshness based on the project rule:
+# If (leaf_color <= 2) AND at least 3 of {leaf_color<=2, bulb_color==1, tip<=5, dead_leaf==0} are true → Fresh (1), else 0.
+cond_leaf_ok <- !is.na(tmp$leaf_color_num) & tmp$leaf_color_num <= 2
+cond_bulb    <- !is.na(tmp$bulb_color_num) & tmp$bulb_color_num == 1
+cond_tip     <- !is.na(tmp$tip_num)        & tmp$tip_num <= 5
+cond_dead    <- !is.na(tmp$dead_leaf_num)  & tmp$dead_leaf_num == 0
+
+sum_conds <- rowSums(cbind(cond_leaf_ok, cond_tip, cond_dead, cond_bulb), na.rm = TRUE)
+freshness_calc <- ifelse(cond_leaf_ok & sum_conds >= 3, 1L, 0L)
+
+# Compare with provided freshness (if present). We report *true mismatches* (exclude provided NAs).
+provided <- tmp$freshness_num
+mism_idx <- which(!is.na(provided) & (freshness_calc != provided))
+message("Freshness check: ",
+        sum(freshness_calc == provided, na.rm = TRUE), " match; ",
+        length(mism_idx), " mismatch (excluding provided NAs).")
+if (length(mism_idx) > 0) {
+  print(dplyr::tibble(row = mism_idx,
+                      provided = provided[mism_idx],
+                      computed = freshness_calc[mism_idx]))
+}
+
+# Final typed dataset: numeric where numeric, categorical as factors
+df <- tmp %>%
+  mutate(
+    day_0_len = as.numeric(day_0_len),
+    day_3_len = as.numeric(day_3_len),
+    day_6_len = as.numeric(day_6_len),
+    day_9_len = as.numeric(day_9_len),
+    circumf   = as.numeric(circumf),
+    tip       = as.numeric(tip_num),  # keep numeric for analysis
+    lab   = factor(lab, levels = c("C","A","D"), labels = c("Chandler","An","Dhruba")),
+    label = factor(label),  # keeps GL/DN/DW/SN/SW/FN prefixes with serial numbers
+    # Human-readable factor encodings
+    leaf_color = factor(as.integer(leaf_color_num),
+                        levels = c(1,2,3),
+                        labels = c("vibrant green","dark green","yellowish/brownish")),
+    bulb_color = factor(as.integer(bulb_color_num),
+                        levels = c(0,1),
+                        labels = c("not clear/white","clear & white")),
+    dead_leaf  = factor(as.integer(dead_leaf_num),
+                        levels = c(0,1),
+                        labels = c("No","Yes")),
+    freshness  = factor(ifelse(is.na(freshness_num), NA, as.integer(freshness_num)),
+                        levels = c(0,1),
+                        labels = c("No","Yes")),
+    freshness_calc = factor(as.integer(freshness_calc), levels = c(0,1), labels = c("No","Yes"))
+  ) %>%
+  select(-ends_with("_num"))
+
+# Derive label group (GL/DN/DW/SN/SW/FN) and serial number
+df <- df %>%
+  mutate(
+    label_chr    = as.character(label),
+    label_grp    = stringr::str_extract(label_chr, "^[A-Za-z]+"),
+    label_serial = as.integer(stringr::str_extract(label_chr, "(\\d+)$"))
+  ) %>%
+  mutate(label_grp = factor(label_grp)) %>%
+  select(-label_chr)
+
+glimpse(df)
+```
+
+## Variables in the Dataset
+
+The cleaned dataset (`df`) contains **59 rows × 15 columns**, with the following variables:
+
+| Variable | Type | Meaning | Possible Values / Range |
+|----------|------|---------|-------------------------|
+| **lab** | factor | Lab where the plant was grown | `"Chandler"`, `"An"`, `"Dhruba"` |
+| **label** | factor | Unique plant ID including treatment code + serial number | e.g. `"GL1"`, `"SW3"`, `"DN2"` |
+| **day_0_len**, **day_3_len**, **day_6_len**, **day_9_len** | numeric | Plant height (cm) measured over time | ~10 cm initially, up to ~42 cm by Day 9 |
+| **circumf** | numeric | Stem circumference (cm) | ~3.0 – 5.9 cm |
+| **leaf_color** | factor | Visual rating of leaf color | `"vibrant green"`, `"dark green"`, `"yellowish/brownish"` |
+| **bulb_color** | factor | Whether the lower bulb area is clear and white | `"clear & white"`, `"not clear/white"` |
+| **tip** | numeric | Length of dried/brown leaf tip (mm) | ~0.5 – 11.0 mm |
+| **dead_leaf** | factor | Presence of dried/dead leaf tissue | `"Yes"` or `"No"` |
+| **freshness** | factor | Rule-based computed freshness | `"Yes"` or `"No"` |
+| **label_grp** | factor | Treatment group (environment condition) | `"GL"`, `"DN"`, `"DW"`, `"SN"`, `"SW"`, `"FN"` |
+| **label_serial** | integer | Serial number within treatment group | 1, 2, 3, 4, ... |
+
+---
+
+### Note (derived fields). 
+
+`label_grp` and `label_serial` are **not in the original dataset**; they are created during cleaning from the `label` column.  
+1. `label_grp`: alphabetical treatment prefix extracted from `label` (GL, DN, DW, SN, SW, FN).  
+2. `label_serial`: numeric suffix extracted from `label` (1, 2, 3, …).
+
+### Note: Rule Used to Compute `freshness`
+
+A plant is classified as **fresh = 1 ("Yes")** if **all** of the following conditions are satisfied:
+
+1. **Leaf color is good:** `leaf_color <= 2` (vibrant green or dark green), **and**
+2. At least **2 out of the 3** following visual checks are true:  
+   - bulb is clear & white (`bulb_color == 1`)  
+   - tip length ≤ 5 mm (`tip <= 5`)  
+   - no dead leaf present (`dead_leaf == 0`)
+
+Otherwise, **fresh = 0 ("No")**.
+
+The derived column (`freshness_calc`) is used only as a **consistency check** against the originally recorded `freshness` field.
+
+### Treatment Conditions (`label_grp`)
+
+Each plant belongs to one of **six treatment combinations** based on lighting and watering conditions:
+
+| Code | Meaning |
+|------|---------|
+| **SW** | Sunlight + Water |
+| **SN** | Sunlight + No Water |
+| **DW** | Shade + Water |
+| **DN** | Shade + No Water |
+| **GL** | Grow Light + Water |
+| **FN** | Fridge + No Water |
+------------------------------------------------------------------------
+
+# 3. Variance analysis
+
+## 3.1. Circumference by Lab
+
+```{r var-by-lab}
+lab_var <- df %>%
+  group_by(lab) %>%
+  summarise(
+    n_circ   = sum(!is.na(circumf)),
+    mean_circ= mean(circumf, na.rm = TRUE),
+    var_circ = var(circumf,  na.rm = TRUE),
+    sd_circ  = sqrt(var_circ),
+    .groups = "drop"
+  ) %>%
+  arrange(lab)
+
+lab_var %>% knitr::kable(caption = "Circumference summary by Lab")
+
+# Quick diagnostic: spread by lab
+lab_sd <- df %>%
+  group_by(lab) %>%
+  summarise(n = sum(!is.na(circumf)),
+            sd_circ = sd(circumf, na.rm = TRUE),
+            .groups = "drop")
+ratio_max_min <- with(lab_sd, max(sd_circ, na.rm = TRUE) / min(sd_circ, na.rm = TRUE))
+print(ratio_max_min)  # ~1 means very similar spreads; > ~1.5–2 suggests heteroskedasticity
+```
+
+**Interpretation.** The lab-wise standard deviations of circumference differ by a factor of **`r round(ratio_max_min, 2)`** (max/min). As a rule of thumb, ratios above 1.5–2.0 suggest **heteroskedasticity** (non-constant variance) that may reflect **batch/lab effects**.
+
+## 3.2. Circumference by Lab × Label Group
+
+```{r var-by-lab-label}
+lab_label_var <- df %>%
+  group_by(lab, label_grp) %>%
+  summarise(
+    n_circ   = sum(!is.na(circumf)),
+    mean_circ= mean(circumf, na.rm = TRUE),
+    var_circ = var(circumf,  na.rm = TRUE),
+    sd_circ  = sqrt(var_circ),
+    .groups = "drop"
+  ) %>%
+  arrange(lab, label_grp)
+
+lab_label_var %>% knitr::kable(caption = "Circumference summary by Lab × Label Group")
+```
+
+```{r var-plot, fig.height=5.2}
+ggplot(lab_label_var, aes(x = label_grp, y = sd_circ, fill = lab)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  labs(
+    title = "Circumference Standard Deviation by Lab and Label Group",
+    x = "Label Group",
+    y = "Std. Deviation of Circumference (in cm)"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_brewer(palette = "Dark2")
+```
+
+**Interpretation.** Within *Light × Water* treatment groups (e.g., **SW** = Sunlight+Water; **SN** = Sunlight+No Water; **DW** = Shade+Water; **DN** = Shade+No Water; **GL** = Grow Light; **FN** = Fridge+No Water), the **spread of circumference** varies across labs. Treatments with larger **sd** may indicate greater biological variability or measurement variability under that condition and lab.
+
+------------------------------------------------------------------------
+
+# 4. Treatment structure & counts
+
+```{r lab-label-counts}
+lab_label_table <- df %>%
+  count(lab, label_grp) %>%
+  pivot_wider(names_from = label_grp, values_from = n, values_fill = 0) %>%
+  arrange(lab)
+
+lab_label_table %>% knitr::kable(caption = "Counts by Lab × Label Group")
+```
+
+**Interpretation.** The table shows sample sizes for each **Lab × Treatment** cell. **Chandler** is the only one who ran the **Grow Light (GL)** condition, so those experiments were conducted there. **An** did not have sufficient onions to populate all five light × water groups, so some cells are sparse or missing.
+
+------------------------------------------------------------------------
+
+# 5. Growth over Time
+
+```{r growth, echo=FALSE}
+# Mean ± SE per treatment over time
+len_long <- df %>%
+  select(label, label_grp, lab, day_0_len, day_3_len, day_6_len, day_9_len) %>%
+  pivot_longer(cols = starts_with("day_"),
+               names_to = "day",
+               values_to = "length_cm") %>%
+  mutate(day_num = as.numeric(str_extract(day, "\\d+")))
+
+len_summary <- len_long %>%
+  group_by(label_grp, day_num) %>%
+  summarise(
+    n = sum(!is.na(length_cm)),
+    mean = mean(length_cm, na.rm = TRUE),
+    sd = sd(length_cm, na.rm = TRUE),
+    se = sd / sqrt(n),
+    .groups = "drop"
+  )
+
+len_summary %>%
+  ggplot(aes(day_num, mean, color = label_grp)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_ribbon(aes(ymin = mean - se, ymax = mean + se, fill = label_grp),
+              alpha = 0.15, color = NA, show.legend = FALSE) +
+  scale_x_continuous(breaks = c(0,3,6,9)) +
+  labs(title = "Mean growth over time by treatment (±SE)",
+       x = "Day", y = "Mean length (cm)")
+```
+
+**Interpretation**
+All treatment groups start at roughly the same initial height on Day 0, but their growth trajectories begin to separate clearly over time. The DW (Shade + Water) group shows the fastest and most sustained growth, ending with the highest mean height by Day 9, followed by GL (Grow Light + Water) and SW (Sunlight + Water ). In contrast, the SN (Sunlight + No water), DN (Shade + No Water) and FN (Fridge + No Water) groups show very limited growth, indicating that the absence of water strongly restricts development regardless of light conditions. The widening gap between watered and non-watered treatments over time reinforces that watering drives cumulative growth.
+
+
+# 6. Distribution of Height on day 9.
+
+```{r histogram_1}
+# Histogram helper (accepts "day_9" or "day_9_len")
+plot_height_hist_day <- function(df, day, bins = 20) {
+  stopifnot(is.character(day), length(day) == 1)
+  day_col <- if (day %in% names(df)) {
+    day
+  } else if (paste0(day, "_len") %in% names(df)) {
+    paste0(day, "_len")
+  } else {
+    stop(sprintf("Column '%s' (or '%s_len') not found in df.", day, day))
+  }
+  lab <- stringr::str_to_title(gsub("_len$", "", day_col))
+  lab <- gsub("day_(\\d+)", "Day \\1", tolower(lab), perl = TRUE)
+  dat <- df %>% transmute(height_cm = suppressWarnings(as.numeric(.data[[day_col]]))) %>% filter(!is.na(height_cm))
+  ggplot(dat, aes(x = height_cm)) +
+    geom_histogram(bins = bins, boundary = 0, closed = "left",
+                   fill = "#2E86AB", color = "white", linewidth = 0.4) +
+    labs(title = sprintf("Height Distribution (%s)", lab), x = "Height (cm)", y = "Count") +
+    theme_minimal(base_size = 14)
+}
+
+print(plot_height_hist_day(df, "day_9_len", bins = 10))
+```
+
+# 7. Height comparisons by light and watering
+
+```{r helpers-plots}
+# Sun vs Shade for a given day column
+plot_sunshade_day <- function(df, day_col) {
+  stopifnot(is.character(day_col), length(day_col) == 1)
+  if (!day_col %in% names(df)) stop(sprintf("Column '%s' not found in df.", day_col))
+  
+  dat <- df %>%
+    transmute(
+      sun_shade = dplyr::case_when(
+        label_grp %in% c("SN","SW") ~ "Sun",
+        label_grp %in% c("DN","DW") ~ "Shade",
+        TRUE ~ NA_character_
+      ),
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(sun_shade), !is.na(height_cm))
+  
+  day_no <- stringr::str_to_title(gsub("_len$", "", day_col))
+  day_no <- gsub("day_(\\d+)", "Day \\1", tolower(day_no), perl = TRUE)
+  
+  ggplot(dat, aes(x = sun_shade, y = height_cm, fill = sun_shade)) +
+    geom_boxplot(outlier.alpha = 0.25, width = 0.7) +
+    labs(
+      title = sprintf("Heights on %s: Sun vs Shade", day_no),
+      x = NULL, y = "Height (cm)"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+}
+
+# Water vs No Water for a given day column
+plot_water_day <- function(df, day_col) {
+  stopifnot(is.character(day_col), length(day_col) == 1)
+  if (!day_col %in% names(df)) stop(sprintf("Column '%s' not found in df.", day_col))
+  
+  dat <- df %>%
+    transmute(
+      water = dplyr::case_when(
+        label_grp %in% c("DW","SW") ~ "Water",
+        label_grp %in% c("DN","SN") ~ "No water",
+        TRUE ~ NA_character_ # GL excluded (watering unspecified)
+      ),
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(water), !is.na(height_cm))
+  
+  day_no <- stringr::str_to_title(gsub("_len$", "", day_col))
+  day_no <- gsub("day_(\\d+)", "Day \\1", tolower(day_no), perl = TRUE)
+  
+  ggplot(dat, aes(x = water, y = height_cm, fill = water)) +
+    geom_boxplot(outlier.alpha = 0.25, width = 0.7) +
+    labs(
+      title = sprintf("Heights on %s: Water vs No Water", day_no),
+      x = NULL, y = "Height (cm)"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+}
+
+# Lab × Water and Lab × Sun/Shade for a given day column
+plot_day_labXwater_sunshade <- function(df, day_col) {
+  stopifnot(is.character(day_col), length(day_col) == 1)
+  if (!day_col %in% names(df)) stop(sprintf("Column '%s' not found in df.", day_col))
+  if (!("label_grp" %in% names(df))) stop("df must contain 'label_grp'.")
+  if (!("lab" %in% names(df))) stop("df must contain 'lab'.")
+  
+  # Water vs No Water (exclude GL)
+  dat_water <- df %>%
+    transmute(
+      lab,
+      water = dplyr::case_when(
+        label_grp %in% c("DW","SW") ~ "Water",
+        label_grp %in% c("DN","SN") ~ "No water",
+        TRUE ~ NA_character_
+      ),
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(water), !is.na(height_cm), !is.na(lab)) %>%
+    mutate(water = factor(water, levels = c("No water","Water")))
+  
+  day_no <- stringr::str_to_title(gsub("_len$", "", day_col))
+  day_no <- gsub("day_(\\d+)", "Day \\1", tolower(day_no), perl = TRUE)
+  
+  p_water <- ggplot(dat_water, aes(x = lab, y = height_cm, fill = water)) +
+    geom_boxplot(position = position_dodge(width = 0.75), width = 0.65, outlier.alpha = 0.25) +
+    labs(
+      title = sprintf("Heights on %s: Lab × Water vs No Water", day_no),
+      x = "Lab", y = "Height (cm)", fill = "Water"
+    ) +
+    theme_minimal(base_size = 14)
+  
+  # Sun vs Shade (exclude GL & FN)
+  dat_sunshade <- df %>%
+    transmute(
+      lab,
+      sun_shade = dplyr::case_when(
+        label_grp %in% c("SN","SW") ~ "Sun",
+        label_grp %in% c("DN","DW") ~ "Shade",
+        TRUE ~ NA_character_
+      ),
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(sun_shade), !is.na(height_cm), !is.na(lab)) %>%
+    mutate(sun_shade = factor(sun_shade, levels = c("Shade","Sun")))
+  
+  p_sunshade <- ggplot(dat_sunshade, aes(x = lab, y = height_cm, fill = sun_shade)) +
+    geom_boxplot(position = position_dodge(width = 0.75), width = 0.65, outlier.alpha = 0.25) +
+    labs(
+      title = sprintf("Heights on %s: Lab × Sun vs Shade", day_no),
+      x = "Lab", y = "Height (cm)", fill = "Light"
+    ) +
+    theme_minimal(base_size = 14)
+  
+  list(water_plot = p_water, sunshade_plot = p_sunshade)
+}
+```
+
+### Day 9 height comparisons
+
+```{r day9-plots, fig.height=5.2}
+print(plot_sunshade_day(df, "day_9_len"))
+print(plot_water_day(df,    "day_9_len"))
+
+figs <- plot_day_labXwater_sunshade(df, "day_9_len")
+print(figs$water_plot)
+print(figs$sunshade_plot)
+```
+
+**Interpretation.** Across all four plots, watering emerges as the clearest and most consistent driver of plant height on Day 9: watered plants are markedly taller than non-watered plants in every lab, with little overlap in their distributions. In contrast, the Sun vs Shade comparison shows a weaker and less stable pattern, with the direction and magnitude of the light effect varying across labs. The lab-wise plots further show that absolute height levels differ by lab, and the effect of light is not uniform—indicating a potential interaction between lab conditions and light treatment. Overall, the results suggest that watering has a strong and biologically robust effect on growth, whereas the influence of light is weaker.
+
+------------------------------------------------------------------------
+
+# 8. Freshness: distribution & associations
+
+```{r freshness-calc}
+# Unified freshness field preferring computed when available
+df <- df %>%
+  mutate(fresh_use = dplyr::coalesce(as.character(freshness_calc), as.character(freshness))) %>%
+  mutate(fresh_use = factor(fresh_use, levels = c("No","Yes")))
+
+# Proportions by lab
+ggplot(df, aes(x = lab, fill = fresh_use)) +
+  geom_bar(width = 0.7, position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Fresh vs Not Fresh: Proportions by Lab",
+       x = "Lab", y = "Proportion", fill = "Fresh") +
+  theme_minimal(base_size = 14)
+```
+
+**Interpretation** Across labs, the proportion of plants classified as “fresh” varies, with An showing the highest share of fresh samples and Chandler the lowest, suggesting differences in growing conditions or handling across locations.
+
+```{r labwise freshness}
+.fresh_use <- function(df) {
+  if ("freshness_calc" %in% names(df)) {
+    factor(dplyr::coalesce(as.character(df$freshness_calc), as.character(df$freshness)),
+           levels = c("No","Yes"))
+  } else if ("freshness" %in% names(df)) {
+    factor(as.character(df$freshness), levels = c("No","Yes"))
+  } else stop("df must contain 'freshness_calc' or 'freshness'.")
+}
+
+# 1) Sun/Shade vs Freshness (exclude GL and FN)
+plot_sunshade_vs_freshness <- function(df, facet_lab = FALSE, percent = TRUE) {
+  stopifnot("label_grp" %in% names(df))
+  dat <- df %>%
+    mutate(
+      freshness = .fresh_use(df),
+      sun_shade = dplyr::case_when(
+        label_grp %in% c("SN","SW") ~ "Sun",
+        label_grp %in% c("DN","DW") ~ "Shade",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(sun_shade), !is.na(freshness))
+  
+  p <- ggplot(dat, aes(x = sun_shade, fill = freshness)) +
+    geom_bar(position = if (percent) "fill" else "stack", width = 0.7) +
+    labs(
+      title = "Sun/Shade vs Freshness",
+      x = "Light condition", y = if (percent) "Proportion" else "Count",
+      fill = "Fresh"
+    ) +
+    theme_minimal(base_size = 14)
+  
+  if (facet_lab && "lab" %in% names(df)) p <- p + facet_wrap(~ lab, nrow = 1)
+  p
+}
+
+# 2) Water vs No Water vs Freshness (exclude GL)
+plot_water_vs_freshness <- function(df, facet_lab = FALSE, percent = TRUE) {
+  stopifnot("label_grp" %in% names(df))
+  dat <- df %>%
+    mutate(
+      freshness = .fresh_use(df),
+      water = dplyr::case_when(
+        label_grp %in% c("DW","SW") ~ "Water",
+        label_grp %in% c("DN","SN") ~ "No water",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(water), !is.na(freshness))
+  
+  p <- ggplot(dat, aes(x = water, fill = freshness)) +
+    geom_bar(position = if (percent) "fill" else "stack", width = 0.7) +
+    labs(
+      title = "Watering vs Freshness",
+      x = "Watering", y = if (percent) "Proportion" else "Count",
+      fill = "Fresh"
+    ) +
+    theme_minimal(base_size = 14)
+  
+  if (facet_lab && "lab" %in% names(df)) p <- p + facet_wrap(~ lab, nrow = 1)
+  p
+}
+
+print(plot_water_vs_freshness(df)) 
+print(plot_water_vs_freshness(df, facet_lab = TRUE)) 
+print(plot_sunshade_vs_freshness(df)) 
+print(plot_sunshade_vs_freshness(df, facet_lab = TRUE)) 
+```
+
+
+**Interpretation** Watering has a clear and consistent relationship with freshness: across all labs, the proportion of “fresh” plants is much higher in the watered group than in the no-water group, indicating that water availability is the main driver of whether a plant satisfies the visual freshness criteria. In contrast, the Sun vs Shade comparison does not show a strong overall difference in freshness, and the lab-wise breakdown reveals that the direction and magnitude of the light effect varies by location. Notably, in case of **An** the Sun–Shade height relationship appears **reversed** relative to the other labs—likely because An did not have all subgroups represented under Sun, which can shift the apparent distribution.This suggests that while watering has a dominant and fairly uniform influence on plant quality, the effect of light is more context-dependent and may interact with lab-specific growing conditions.
+
+
+```{r height-by-freshness, fig.height=5.2}
+# Boxplot of height vs freshness for a given day column
+plot_freshness_day <- function(df, day_col) {
+  stopifnot(is.character(day_col), length(day_col) == 1)
+  if (!day_col %in% names(df)) stop(sprintf("Column '%s' not found in df.", day_col))
+  
+  dat <- df %>%
+    mutate(
+      fresh_use = dplyr::coalesce(as.character(freshness_calc), as.character(freshness)),
+      fresh_use = factor(fresh_use, levels = c("No", "Yes"))
+    ) %>%
+    transmute(
+      freshness = fresh_use,
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(freshness), !is.na(height_cm))
+  
+  day_no <- stringr::str_to_title(gsub("_len$", "", day_col))
+  day_no <- gsub("day_(\\d+)", "Day \\1", tolower(day_no), perl = TRUE)
+  
+  ggplot(dat, aes(x = freshness, y = height_cm, fill = freshness)) +
+    geom_boxplot(width = 0.7, outlier.alpha = 0.25) +
+    labs(
+      title = sprintf("Heights on %s by Freshness", day_no),
+      x = "Freshness",
+      y = "Height (cm)"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+}
+
+print(plot_freshness_day(df, "day_9_len"))
+```
+
+
+```{r Lab x freshness}
+# Lab × Freshness height boxplots for a given day column
+plot_lab_freshness_day <- function(df, day_col, layout = c("dodge","facet")) {
+  layout <- match.arg(layout)
+  stopifnot(is.character(day_col), length(day_col) == 1)
+  if (!day_col %in% names(df)) stop(sprintf("Column '%s' not found in df.", day_col))
+  if (!("lab" %in% names(df))) stop("df must contain 'lab'.")
+  
+  dat <- df %>%
+    mutate(
+      fresh_use = dplyr::coalesce(as.character(freshness_calc), as.character(freshness)),
+      fresh_use = factor(fresh_use, levels = c("No","Yes"))
+    ) %>%
+    transmute(
+      lab,
+      freshness = fresh_use,
+      height_cm = .data[[day_col]]
+    ) %>%
+    filter(!is.na(lab), !is.na(freshness), !is.na(height_cm))
+  day_no <- str_to_title(gsub("_len$", "", day_col))
+  day_no <- gsub("day_(\\d+)", "Day \\1", tolower(day_no), perl = TRUE)
+  if (layout == "dodge") {
+    # one plot; x = lab, grouped by freshness
+    ggplot(dat, aes(x = lab, y = height_cm, fill = freshness)) +
+      geom_boxplot(position = position_dodge(width = 0.75), width = 0.65, outlier.alpha = 0.25) +
+      labs(
+        title = sprintf("Heights on %s: Lab × Freshness", day_no),
+        x = "Lab", y = "Height (cm)", fill = "Freshness"
+      ) +
+      theme_minimal(base_size = 14)
+  } else {
+    # facet: one panel per lab; x = freshness
+    ggplot(dat, aes(x = freshness, y = height_cm, fill = freshness)) +
+      geom_boxplot(width = 0.7, outlier.alpha = 0.25) +
+      facet_wrap(~ lab, nrow = 1) +
+      labs(
+        title = sprintf("Heights on %s by Freshness (Faceted by Lab)", day_no),
+        x = "Freshness", y = "Height (cm)"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "none")
+  }
+}
+
+print(plot_lab_freshness_day(df, "day_9_len")) 
+```
+
+
+**Interpretation** The boxplot comparing Day 9 heights by freshness shows a clear separation: fresh plants are noticeably taller on average and have a wider range of growth, while non-fresh plants cluster at lower heights with little variation. This confirms that the rule-based freshness measure aligns well with actual plant vigor, as taller and healthier plants are more likely to satisfy the visual criteria used to define freshness. Across all three labs, plants labeled fresh tend to be taller on Day 9 than those labeled not fresh, but the separation between the two groups varies by lab. In case of Chandler and An, the height difference between fresh and non-fresh plants is large and visually distinct, while in Dhruba the two groups overlap more, suggesting weaker discrimination there.
+
+### Freshness vs individual components
+
+```{r freshness-components, fig.height=5.6}
+plot_pct_stack_fresh_y <- function(df, var) {
+  var_sym <- rlang::ensym(var)
+
+  dat <- df %>%
+    mutate(
+      freshness = dplyr::coalesce(as.character(freshness_calc), as.character(freshness)),
+      freshness = factor(freshness, levels = c("No","Yes")),
+      !!var_sym := forcats::fct_explicit_na(factor(!!var_sym), na_level = "(Missing)")
+    ) %>%
+    filter(!is.na(freshness))
+
+  ggplot(dat, aes(x = !!var_sym, fill = freshness)) +
+    geom_bar(position = "fill", width = 0.75, color = "white") +
+    labs(
+      title = paste("Freshness vs", rlang::as_label(var_sym)),
+      x = rlang::as_label(var_sym),
+      y = "Proportion",
+      fill = "Fresh"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(panel.grid.minor = element_blank())
+}
+
+p_leaf  <- plot_pct_stack_fresh_y(df, leaf_color)
+p_bulb  <- plot_pct_stack_fresh_y(df, bulb_color)
+p_dead  <- plot_pct_stack_fresh_y(df, dead_leaf)
+
+print(p_leaf); print(p_bulb); print(p_dead)
+```
+
+------------------------------------------------------------------------
+
+# 9. Count tables for freshness factors
+
+```{r count-tables}
+fresh_counts <- df %>%
+  count(fresh_use, name = "n") %>%
+  mutate(prop = scales::percent(n / sum(n)))
+
+leaf_counts <- df %>%
+  count(leaf_color, name = "n") %>%
+  mutate(prop = scales::percent(n / sum(n)))
+
+bulb_counts <- df %>%
+  count(bulb_color, name = "n") %>%
+  mutate(prop = scales::percent(n / sum(n)))
+
+dead_counts <- df %>%
+  count(dead_leaf, name = "n") %>%
+  mutate(prop = scales::percent(n / sum(n)))
+
+# Print nice tables
+print(knitr::kable(fresh_counts, caption = "Freshness counts"))
+print(knitr::kable(leaf_counts,  caption = "Leaf color counts"))
+print(knitr::kable(bulb_counts,  caption = "Bulb color counts"))
+print(knitr::kable(dead_counts,  caption = "Dead leaf counts"))
+```
+
+------------------------------------------------------------------------
+
+# 10. Distribution of Tip length
+
+```{r histograms}
+df$tip <- suppressWarnings(as.numeric(df$tip))
+ggplot(df %>% filter(!is.na(tip)), aes(x = tip)) +
+  geom_histogram(bins = 10, boundary = 0, closed = "left",
+                 fill = "#2E86AB", color = "white", linewidth = 0.4) +
+  labs(title = "Tip Length Distribution", x = "Tip length (mm)", y = "Count") +
+  theme_minimal(base_size = 14)
+```
+
+------------------------------------------------------------------------
+
+# 11. Key takeaways
+
+-   **Variance structure:** Lab-wise SD ratio = **`r round(ratio_max_min, 2)`**; `r ifelse(ratio_max_min >= 1.5, "evidence of heteroskedasticity across labs.", "little evidence of strong heteroskedasticity across labs.")`\
+-   **Watering vs Light effects:** Watering has a large and consistent impact on growth across labs, with watered plants clearly taller than non-watered plants in every location. In contrast, the Sun vs Shade comparison shows a weaker and more lab-dependent pattern, with the direction and magnitude of the light effect varying across Chandler, An, and Dhruba. This indicates that water is the dominant growth driver.
+-   **Freshness:** Patterns of height and component criteria (leaf/bulb/dead-leaf) generally align with the rule-based freshness measure.
+-   **Lab-specific conditions:** Differences in cell counts are due to experimental logistics rather than missing data—e.g., only Chandler ran the Grow Light condition, and An had limited onions for all treatment combinations. These structural differences should be accounted for when comparing treatments across labs.
