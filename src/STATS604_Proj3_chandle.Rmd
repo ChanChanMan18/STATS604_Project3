@@ -1,0 +1,276 @@
+---
+title: "STATS604 Project 3"
+author: "Chandler Nielsen"
+date: "2025-10-29"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Reading in Data
+
+```{r}
+proj3_data <- read.csv("../data/final_dataset.csv")
+```
+
+## EDA
+
+Separating data into fresh/not fresh:
+
+```{r}
+onions_fresh <- proj3_data[proj3_data["freshness"] == 1, ]
+onions_bad <- proj3_data[proj3_data["freshness"] == 0, ]
+p1 <- hist(onions_fresh$day_9_len)
+p2 <- hist(onions_bad$day_9_len)
+plot(p1, col = rgb(0, 0, 1, 1/4))
+plot(p2, col = rgb(1, 0, 0, 1/4), add=T)
+```
+
+
+## Freshness Permutation Tests
+
+### Difference in Proportions Test - Water Effect
+
+Consider the statistic
+
+$$\text{diff}_s = \text{Prop}(\text{fresh} = 1 \hspace{1mm} | \hspace{1mm} \text{water} = 1, \text{sunlight} = s) - \text{Prop}(\text{fresh} = 1 \hspace{1mm} | \hspace{1mm} \text{water} = 0, \text{sunlight} = s)$$
+Performing difference in proportions test while using the statistic
+
+$$T_{obs} = \frac{n_{\text{dark}}\cdot\text{diff}_{\text{dark}} + n_{\text{sun}}\cdot\text{diff}_{\text{sun}}}{n_{\text{dark}} + n_{\text{sun}}} $$
+
+I will also pool labs. First, I will one-hot-encode the sunlight/water variables. We have the following:
+
+```{r}
+# Keeping rows only with SW/SN/DW/DN
+experimental_condition <- grepl("^[SD][WN][0-9]+$", proj3_data$label)
+df_exp <- proj3_data[experimental_condition, , drop = FALSE]
+df_exp$sunlight <- ifelse(substr(df_exp$label, 1, 1) == "S", 1, 0)
+df_exp$water <- ifelse(substr(df_exp$label, 2, 2) == "W", 1, 0)
+```
+
+Next, I will define a function to compute the water effect controlling for sunlight:
+
+```{r}
+water_effect_stat <- function(input_data) {
+  
+  # Calculate difference in proportion for each sunlight group
+  sun_levels <- sort(unique(input_data$sunlight))
+  diffs <- numeric(length(sun_levels))
+  wts <- numeric(length(sun_levels))
+  
+  for (i in seq_along(sun_levels)) {
+    s <- sun_levels[i]
+    sub <- input_data[input_data$sunlight == s, , drop=FALSE]
+    
+    p_water <- mean(sub$freshness[sub$water == 1])
+    p_nowater <- mean(sub$freshness[sub$water == 0])
+    
+    diffs[i] <- p_water - p_nowater
+    wts[i] <- nrow(sub)
+    
+  }
+  
+  sum(diffs * wts) / sum(wts)
+}
+
+T_obs <- water_effect_stat(df_exp)
+T_obs
+```
+
+Now I can run the permutation test:
+
+```{r}
+set.seed(82803)
+B <- 10000
+T_perm <- numeric(B)
+
+sun_levels <- sort(unique(df_exp$sunlight))
+
+for (b in seq_len(B)) {
+  dat_perm <- df_exp
+  
+  # Permute water inside each sunlight stratum
+  for (s in sun_levels) {
+    light_ind <- which(df_exp$sunlight == s)
+    dat_perm$water[light_ind] <- sample(df_exp$water[light_ind])
+  }
+  
+  T_perm[b] <- water_effect_stat(dat_perm)
+}
+
+# One sided p-value (water increases freshness)
+p_one_sided <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+print(p_one_sided)
+```
+
+The above is the one-sided p-value. We can also produce a histogram for the distribution of permuted statistics. This is illustrated below:
+
+```{r}
+hist(T_perm,
+     main = "Distribution of T statistic - Water",
+     xlab = "Tstat")
+abline(v = T_obs, col="blue")
+text(x = 0.3844848, y = 1750, labels = "T_obs", srt = 90, pos = 4, col = "blue")
+```
+
+
+### Difference in Proportions Test - Sunlight Effect
+
+We will now perform the same test as before, but now we will condition on the water and test whether sunlight was significant.
+
+```{r}
+sun_effect_stat <- function(input_data) {
+  
+  # Calculate difference in proportion for each water group
+  water_levels <- sort(unique(input_data$water))
+  diffs <- numeric(length(water_levels))
+  wts <- numeric(length(water_levels))
+  
+  for (i in seq_along(water_levels)) {
+    s <- water_levels[i]
+    sub <- input_data[input_data$water == s, , drop=FALSE]
+    
+    p_sun <- mean(sub$freshness[sub$sunlight == 1])
+    p_nosun <- mean(sub$freshness[sub$sunlight == 0])
+    
+    diffs[i] <- p_sun - p_nosun
+    wts[i] <- nrow(sub)
+    
+  }
+  
+  sum(diffs * wts) / sum(wts)
+}
+
+T_obs <- sun_effect_stat(df_exp)
+T_obs
+```
+
+Running permutation test to assess effect of sunlight:
+
+```{r}
+set.seed(82803)
+B <- 10000
+T_perm <- numeric(B)
+
+water_levels <- sort(unique(df_exp$water))
+
+for (b in seq_len(B)) {
+  dat_perm <- df_exp
+  
+  # Permute water inside each water stratum
+  for (s in water_levels) {
+    water_ind <- which(df_exp$water == s)
+    dat_perm$sunlight[water_ind] <- sample(df_exp$sunlight[water_ind])
+  }
+  
+  T_perm[b] <- sun_effect_stat(dat_perm)
+}
+
+# One sided p-value (sun increases freshness)
+p_one_sided <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+print(p_one_sided)
+```
+
+Evidently, sunlight is not associated with an increase in freshness. Once again, we produce a histogram illustrating the distribution of our statistic and our observed statistic value:
+
+```{r}
+hist(T_perm,
+     main = "Distribution of T statistic - Sunlight",
+     xlab = "Tstat")
+abline(v = T_obs, col="red")
+text(x = 0.0115152, y = 1250, labels = "T_obs", srt = 90, pos = 4, col = "red")
+
+```
+
+### Difference in Proportions Test - Fridge/Darkness no water
+
+Typically, people think it is best to store plants in the fridge as opposed to one of the experimental setups considered in this lab. Thus, as a final permutation test, we consider the difference in proportions between those green onions from the fridge with those from the seemingly best condition: darkness with no water.
+
+We first subset the data for these labels:
+
+```{r}
+is_fridge_nowater   <- grepl("^FN[0-9]+$", proj3_data$label)
+is_darkness_water <- grepl("^DW[0-9]+$", proj3_data$label)
+
+df_final <- proj3_data[is_fridge_nowater | is_darkness_water, , drop = FALSE]
+
+# Create a two-level group variable
+df_final$group <- ifelse(grepl("^FN", df_final$label),
+                       "fridge",
+                       "dark_water")
+```
+
+Next, we can compute our observed difference in proportions
+
+```{r}
+mean_fridge <- mean(df_final$freshness[df_final$group == "fridge"])
+mean_dark   <- mean(df_final$freshness[df_final$group == "dark_water"])
+
+T_obs <- mean_dark - mean_fridge
+T_obs
+```
+
+```{r}
+set.seed(123)        
+B <- 10000           
+T_perm <- numeric(B) 
+
+for (b in seq_len(B)) {
+  # randomly permute which samples are called "fridge" vs "dark_water"
+  permuted_group <- sample(df_final$group)
+
+  mean_fridge_b <- mean(df_final$freshness[permuted_group == "fridge"])
+  mean_dark_b   <- mean(df_final$freshness[permuted_group == "dark_water"])
+
+  T_perm[b] <- mean_dark_b - mean_fridge_b
+}
+
+p_one_sided <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+p_one_sided
+```
+
+Our observed difference suggests that green onions left in the darkness with water are more fresh than those green onions in the fridge with no water. However, the p-value suggests that there is not a statistically significant difference between these groups.
+
+```{r}
+hist(T_perm,
+     main = "Distribution of T statistic - Dark + Water versus Fridge ",
+     xlab = "Tstat")
+abline(v = T_obs, col="darkgreen")
+text(x = 0.18, y = 2690, labels = "T_obs", srt = 90, pos = 4, col = "darkgreen")
+
+```
+
+
+```{r}
+cond_table <- aggregate(
+  freshness ~ sunlight + water,
+  data = df_exp,
+  FUN = function(x) c(mean = mean(x), n = length(x))
+)
+
+# aggregate() packs mean and n into a matrix column; unpack it nicely:
+cond_summary <- data.frame(
+  sunlight = cond_table$sunlight,
+  water    = cond_table$water,
+  n        = cond_table$freshness[ , "n"],
+  fresh_rate = cond_table$freshness[ , "mean"]
+)
+
+# Add readable labels
+cond_summary$light_label <- ifelse(cond_summary$sunlight == 1, "Sunlight", "Darkness")
+cond_summary$water_label <- ifelse(cond_summary$water == 1, "Water", "No Water")
+
+cat("Freshness rates by condition:\n")
+for (i in seq_len(nrow(cond_summary))) {
+  cat(sprintf(
+    "%s, %s: n=%d, mean freshness=%.3f\n",
+    cond_summary$light_label[i],
+    cond_summary$water_label[i],
+    cond_summary$n[i],
+    cond_summary$fresh_rate[i]
+  ))
+}
+```
+
