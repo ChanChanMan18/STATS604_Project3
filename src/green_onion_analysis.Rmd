@@ -457,7 +457,7 @@ ggplot(df, aes(x = lab, fill = fresh_use)) +
   theme_minimal(base_size = 14)
 ```
 
-**Interpretation** Across labs, the proportion of plants classified as “fresh” varies, with An showing the highest share of fresh samples and Chandler the lowest, suggesting differences in growing conditions or handling across locations.
+**Interpretation** Across labs, the proportion of plants classified as “fresh” varies, with Dhruba showing the highest share of fresh samples and Chandler the lowest, suggesting differences in growing conditions or handling across locations.
 
 ```{r labwise freshness}
 .fresh_use <- function(df) {
