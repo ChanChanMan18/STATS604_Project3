@@ -1,12 +1,12 @@
 ---
 title: "Green Onion EDA & Variance Analysis"
 output:
+  pdf_document: 
+    latex_engine: xelatex
   html_document:
     toc: true
     toc_depth: 3
     df_print: paged
-  pdf_document: 
-    latex_engine: xelatex
 editor_options:
   chunk_output_type: console
 ---
@@ -19,7 +19,6 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width =
 
 ```{r libraries}
 # Core
-library(readr)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -35,13 +34,45 @@ library(knitr)     # kable
 ------------------------------------------------------------------------
 
 # 2. Data load & light cleaning
-
-```{r load-clean}
+```{r load}
 # Load
-raw <- read_csv("data/final_dataset.csv", show_col_types = FALSE) 
+proj3_data <- read.csv("data/final_dataset.csv") 
+glimpse(proj3_data)
+```
+
+## Variables in the Dataset
+
+The original dataset (`proj3_data`) contains **59 rows × 12 columns**, with the following variables:
+
+| Variable | Type | Meaning | Possible Values / Range |
+|----------|------|---------|-------------------------|
+| **lab** | factor | Lab where the plant was grown | `"C"` for Chandler, `"A"` for An, `"D"` for Dhruba|
+| **label** | factor | Unique plant ID including treatment code + serial number | e.g. `"GL1"`, `"SW3"`, `"DN2"` |
+| **day_0_len**, **day_3_len**, **day_6_len**, **day_9_len** | numeric | Plant height (cm) measured over time | ~10 cm initially, up to ~42 cm by Day 9 |
+| **circumf** | numeric | Stem circumference (cm) | ~3.0 – 5.9 cm |
+| **leaf_color** | factor | Visual rating of leaf color | `"1"` for vibrant green, `"2"` for dark green, `"3"` for yellowish/brownish |
+| **bulb_color** | factor | Whether the lower bulb area is clear and white | `"1"` for clear & white, `"0"` for not clear/white |
+| **tip** | numeric | Length of dried/brown leaf tip (mm) | ~0.5 – 11.0 mm |
+| **dead_leaf** | factor | Presence of dried/dead leaf tissue | `"1"` for Yes or `"0"` for No |
+| **freshness** | factor | Rule-based computed freshness | `"1"` for Yes or `"0"` for No |
+
+### Note: Rule Used to Compute `freshness`
+
+A plant is classified as **fresh = 1 ("Yes")** if **all** of the following conditions are satisfied:
+
+1. **Leaf color is good:** `leaf_color <= 2` (vibrant green or dark green), **and**
+2. At least **2 out of the 3** following visual checks are true:  
+   - bulb is clear & white (`bulb_color == 1`)  
+   - tip length ≤ 5 mm (`tip <= 5`)  
+   - no dead leaf present (`dead_leaf == 0`)
+
+Otherwise, **fresh = 0 ("No")**.
+---
+
+```{r clean}
                                                                                    
 # Ensure numeric-typed columns for computable fields (safe even if already numeric)
-tmp <- raw %>%
+tmp <- proj3_data %>%
   mutate(
     leaf_color_num = as.numeric(leaf_color),
     bulb_color_num = as.numeric(bulb_color),
@@ -113,25 +144,6 @@ df <- df %>%
 glimpse(df)
 ```
 
-## Variables in the Dataset
-
-The cleaned dataset (`df`) contains **59 rows × 15 columns**, with the following variables:
-
-| Variable | Type | Meaning | Possible Values / Range |
-|----------|------|---------|-------------------------|
-| **lab** | factor | Lab where the plant was grown | `"Chandler"`, `"An"`, `"Dhruba"` |
-| **label** | factor | Unique plant ID including treatment code + serial number | e.g. `"GL1"`, `"SW3"`, `"DN2"` |
-| **day_0_len**, **day_3_len**, **day_6_len**, **day_9_len** | numeric | Plant height (cm) measured over time | ~10 cm initially, up to ~42 cm by Day 9 |
-| **circumf** | numeric | Stem circumference (cm) | ~3.0 – 5.9 cm |
-| **leaf_color** | factor | Visual rating of leaf color | `"vibrant green"`, `"dark green"`, `"yellowish/brownish"` |
-| **bulb_color** | factor | Whether the lower bulb area is clear and white | `"clear & white"`, `"not clear/white"` |
-| **tip** | numeric | Length of dried/brown leaf tip (mm) | ~0.5 – 11.0 mm |
-| **dead_leaf** | factor | Presence of dried/dead leaf tissue | `"Yes"` or `"No"` |
-| **freshness** | factor | Rule-based computed freshness | `"Yes"` or `"No"` |
-| **label_grp** | factor | Treatment group (environment condition) | `"GL"`, `"DN"`, `"DW"`, `"SN"`, `"SW"`, `"FN"` |
-| **label_serial** | integer | Serial number within treatment group | 1, 2, 3, 4, ... |
-
----
 
 ### Note (derived fields). 
 
@@ -139,19 +151,7 @@ The cleaned dataset (`df`) contains **59 rows × 15 columns**, with the followin
 1. `label_grp`: alphabetical treatment prefix extracted from `label` (GL, DN, DW, SN, SW, FN).  
 2. `label_serial`: numeric suffix extracted from `label` (1, 2, 3, …).
 
-### Note: Rule Used to Compute `freshness`
-
-A plant is classified as **fresh = 1 ("Yes")** if **all** of the following conditions are satisfied:
-
-1. **Leaf color is good:** `leaf_color <= 2` (vibrant green or dark green), **and**
-2. At least **2 out of the 3** following visual checks are true:  
-   - bulb is clear & white (`bulb_color == 1`)  
-   - tip length ≤ 5 mm (`tip <= 5`)  
-   - no dead leaf present (`dead_leaf == 0`)
-
-Otherwise, **fresh = 0 ("No")**.
-
-The derived column (`freshness_calc`) is used only as a **consistency check** against the originally recorded `freshness` field.
+3. `freshness_calc`: This is used only as a **consistency check** against the originally recorded `freshness` field.
 
 ### Treatment Conditions (`label_grp`)
 
@@ -167,9 +167,25 @@ Each plant belongs to one of **six treatment combinations** based on lighting an
 | **FN** | Fridge + No Water |
 ------------------------------------------------------------------------
 
-# 3. Variance analysis
+# 3. Treatment structure & counts
 
-## 3.1. Circumference by Lab
+```{r lab-label-counts}
+lab_label_table <- df %>%
+  count(lab, label_grp) %>%
+  pivot_wider(names_from = label_grp, values_from = n, values_fill = 0) %>%
+  arrange(lab)
+
+lab_label_table %>% knitr::kable(caption = "Counts by Lab × Label Group")
+```
+
+**Interpretation.** The table shows sample sizes for each **Lab × Treatment** cell. **Chandler** is the only one who ran the **Grow Light (GL)** condition, so those experiments were conducted there. **An** did not have sufficient onions to populate all five light × water groups, so some cells are sparse or missing.
+
+------------------------------------------------------------------------
+
+
+# 4. Variance analysis
+
+## 4.1. Circumference by Lab
 
 ```{r var-by-lab}
 lab_var <- df %>%
@@ -197,7 +213,7 @@ print(ratio_max_min)  # ~1 means very similar spreads; > ~1.5–2 suggests heter
 
 **Interpretation.** The lab-wise standard deviations of circumference differ by a factor of **`r round(ratio_max_min, 2)`** (max/min). As a rule of thumb, ratios above 1.5–2.0 suggest **heteroskedasticity** (non-constant variance) that may reflect **batch/lab effects**.
 
-## 3.2. Circumference by Lab × Label Group
+## 4.2. Circumference by Lab × Label Group
 
 ```{r var-by-lab-label}
 lab_label_var <- df %>%
@@ -227,21 +243,6 @@ ggplot(lab_label_var, aes(x = label_grp, y = sd_circ, fill = lab)) +
 ```
 
 **Interpretation.** Within *Light × Water* treatment groups (e.g., **SW** = Sunlight+Water; **SN** = Sunlight+No Water; **DW** = Shade+Water; **DN** = Shade+No Water; **GL** = Grow Light; **FN** = Fridge+No Water), the **spread of circumference** varies across labs. Treatments with larger **sd** may indicate greater biological variability or measurement variability under that condition and lab.
-
-------------------------------------------------------------------------
-
-# 4. Treatment structure & counts
-
-```{r lab-label-counts}
-lab_label_table <- df %>%
-  count(lab, label_grp) %>%
-  pivot_wider(names_from = label_grp, values_from = n, values_fill = 0) %>%
-  arrange(lab)
-
-lab_label_table %>% knitr::kable(caption = "Counts by Lab × Label Group")
-```
-
-**Interpretation.** The table shows sample sizes for each **Lab × Treatment** cell. **Chandler** is the only one who ran the **Grow Light (GL)** condition, so those experiments were conducted there. **An** did not have sufficient onions to populate all five light × water groups, so some cells are sparse or missing.
 
 ------------------------------------------------------------------------
 
