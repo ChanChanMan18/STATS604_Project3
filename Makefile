@@ -1,6 +1,6 @@
 # ---- Paths ----
 RMD=src/STATS604_Project3_Report.Rmd
-OUT_DIR=out
+OUT_DIR=src
 OUT_PDF=$(OUT_DIR)/STATS604_Project3_Report.pdf
 DATA_FILES=$(shell find data -type f 2>/dev/null)
 
