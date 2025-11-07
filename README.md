@@ -3,8 +3,8 @@
 **Team:** An Pho · Dhruba Nandi · Chandler Nielsen
 
 **Goal:** Assess effects of **water**, **sunlight**, and **storage** on green onions.  
-- Freshness (partner): stratified permutation tests on proportions  
-- Height (this report): stratified permutation tests on **median** day-9 length
+- Freshness: stratified permutation tests on proportions  
+- Height: stratified permutation tests on **median** day-9 length
 
 **Data & Drive:** analysis reads from `data/`; raw images, spreadsheets, PAP, and notes:  
 <https://drive.google.com/drive/folders/1-StQrIecuYIMJ1vbBB0jFSHr5SwQLyid?usp=drive_link>
