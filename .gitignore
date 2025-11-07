@@ -1,1 +1,36 @@
+# R / RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# knitr / rmarkdown intermediates
+*.utf8.md
+*.knit.md
+*_cache/
+cache/
+*_files/
+figure/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Project outputs
+out/
+
+# renv (keep renv.lock, ignore local libs/staging)
+renv/library/
+renv/staging/
+
+# OS cruft
 .DS_Store
+Thumbs.db
