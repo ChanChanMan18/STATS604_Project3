@@ -16,13 +16,10 @@ make         # knit src/STATS604_Proj3_Report.Rmd -> out/STATS604_Proj3_Report.p
 ```
 
 ## Repo
+```
 src/STATS604_Proj3_report.Rmd  # main report
-
 data/                          # inputs (e.g., final_dataset.csv)
-
 out/                           # outputs (created by Makefile)
-
 Makefile, renv.lock, renv/     # reproducibility
-
 .gitignore                     # ignores caches/build artifacts
-
+```
