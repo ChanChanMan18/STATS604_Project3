@@ -1588,7 +1588,34 @@ text(x = T_obs+.3, y = max(hist(T_perm, plot = FALSE)$counts)*0.8,
 
 ```
 
-## 5.5. Controlling Site-level environment
+## 5.5 Benjamini Hochberg for Multiple Tests
+
+To determine significance, we run our Benjamini-Hochberg procedure to account for the fact that three different nulls were assessed. We have the following:
+
+```{r}
+p_values <- c(
+  water_effect = 1.00e-04,      
+  sunlight_effect = 1.32e-02,   
+  dw_vs_fn = 2.00e-04          
+)
+
+# Apply Benjamini-Hochberg correction for FDR
+alpha <- 0.05  
+
+m <- length(p_values)  
+p_sorted <- sort(p_values)
+ranks <- rank(p_values)
+
+critical_values <- (1:m / m) * alpha
+
+reject <- p_sorted <= critical_values
+
+print(reject)
+```
+
+The BH procedure confirmed our previous results.
+
+## 5.6. Controlling Site-level environment
 
 To control for site-level environment, we re-conduct the above tests by further stratifying by **Lab**. Strata missing a level are excluded from the statistic. As we shall see below, we still have small p-values for all the tests.
 
@@ -1769,6 +1796,32 @@ if (length(dw_fn_lab_res$T_perm) > 0L && is.finite(dw_fn_lab_res$T_obs)) {
   message("Permutation vector is empty after filtering; no histogram drawn.")
 }
 ```
+
+
+To determine significance, we run our Benjamini-Hochberg procedure to account for the fact that three different nulls were assessed. We have the following:
+
+```{r}
+p_values <- c(
+  water_effect = 1.00e-04,      
+  sunlight_effect = 2.38e-02,   
+  dw_vs_fn = 1.00e-04          
+)
+
+# Apply Benjamini-Hochberg correction for FDR
+alpha <- 0.05  
+
+m <- length(p_values)  
+p_sorted <- sort(p_values)
+ranks <- rank(p_values)
+
+critical_values <- (1:m / m) * alpha
+
+reject <- p_sorted <= critical_values
+
+print(reject)
+```
+
+The BH procedure confirmed our previous results.
 
 # 6. Conclusions:
 
