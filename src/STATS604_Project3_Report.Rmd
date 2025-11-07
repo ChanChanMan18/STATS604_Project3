@@ -1,12 +1,12 @@
 ---
 title: "STATS604 Project 3"
 output:
+  pdf_document: 
+    latex_engine: xelatex
   html_document:
     toc: true
     toc_depth: 3
     df_print: paged
-  pdf_document: 
-    latex_engine: xelatex
 editor_options:
   chunk_output_type: console
 ---
@@ -80,7 +80,7 @@ library(knitr)     # kable
 ## 2.2. Data load 
 ```{r load}
 # Load
-proj3_data <- read.csv("data/final_dataset.csv") 
+proj3_data <- read.csv("../data/final_dataset.csv")
 glimpse(proj3_data)
 ```
 
@@ -997,10 +997,355 @@ for (i in seq_len(nrow(cond_summary))) {
 }
 ```
 
+### Benjamini Hochberg for Multiple Tests
+
+To determine significance, we run our Benjamini-Hochberg procedure to account for the fact that three different nulls were assessed. We have the following:
+
+```{r}
+p_values <- c(
+  water_effect = 0.00409959,      
+  sunlight_effect = 0.2568743,   
+  dw_vs_fn = 0.3243676         
+)
+
+# Apply Benjamini-Hochberg correction for FDR
+alpha <- 0.05  
+
+m <- length(p_values)  
+p_sorted <- sort(p_values)
+ranks <- rank(p_values)
+
+critical_values <- (1:m / m) * alpha
+
+reject <- p_sorted <= critical_values
+
+print(reject)
+```
+
+Thus, after correcting for the False Discovery Rate, we conclude that water did have a significant affect on the green onions after controlling for sunlight.
+
+## 4.5 Controlling Site-Level Environment
+
+As Dhruba identified in our EDA, there appear to be site-level effects. Indeed, Chandler's girlfriend's refrigerator broke recently, and we suspect that affected the results of the green onions in the fridge relative to Dhruba and An. We repeat the permutation tests above while additionally conditioning on lab.
+
+### Conditioning on Lab and Sunlight
+
+```{r}
+# Load data and filter to experimental conditions
+experimental_condition <- grepl("^[SD][WN][0-9]+$", proj3_data$label)
+df_exp <- proj3_data[experimental_condition, , drop = FALSE]
+df_exp$sunlight <- ifelse(substr(df_exp$label, 1, 1) == "S", 1, 0)
+df_exp$water <- ifelse(substr(df_exp$label, 2, 2) == "W", 1, 0)
+
+# Test statistic: weighted average of differences in proportions
+# Now stratified by lab × sunlight
+water_effect_stat_by_lab <- function(input_data) {
+  # Create lab × sunlight strata
+  input_data$stratum <- interaction(input_data$lab, input_data$sunlight, drop = TRUE)
+  strata <- unique(input_data$stratum)
+  
+  diffs <- numeric(length(strata))
+  wts <- numeric(length(strata))
+  
+  for (i in seq_along(strata)) {
+    sub <- input_data[input_data$stratum == strata[i], , drop = FALSE]
+    
+    # Skip if stratum doesn't have both water levels
+    if (length(unique(sub$water)) < 2) {
+      diffs[i] <- NA
+      wts[i] <- 0
+      next
+    }
+    
+    p_water <- mean(sub$freshness[sub$water == 1], na.rm = TRUE)
+    p_nowater <- mean(sub$freshness[sub$water == 0], na.rm = TRUE)
+    
+    diffs[i] <- p_water - p_nowater
+    wts[i] <- nrow(sub)
+  }
+  
+  # Remove strata without both water levels
+  valid <- !is.na(diffs) & wts > 0
+  sum(diffs[valid] * wts[valid]) / sum(wts[valid])
+}
+
+# Observed test statistic
+T_obs <- water_effect_stat_by_lab(df_exp)
+cat("Observed T:", T_obs, "\n")
+
+# Permutation test: permute water within each lab × sunlight stratum
+set.seed(82803)
+B <- 10000
+T_perm <- numeric(B)
+
+df_exp$stratum <- interaction(df_exp$lab, df_exp$sunlight, drop = TRUE)
+strata_levels <- unique(df_exp$stratum)
+
+for (b in seq_len(B)) {
+  dat_perm <- df_exp
+  
+  # Permute water within each lab × sunlight stratum
+  for (stratum in strata_levels) {
+    stratum_ind <- which(df_exp$stratum == stratum)
+    dat_perm$water[stratum_ind] <- sample(df_exp$water[stratum_ind])
+  }
+  
+  T_perm[b] <- water_effect_stat_by_lab(dat_perm)
+}
+
+# One-sided p-value
+p_value <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+cat("One-sided p-value:", p_value, "\n")
+
+# Plot
+hist(T_perm, breaks = 30,
+     main = "Water Effect Test (Conditioning on Lab × Sunlight)",
+     xlab = "Test Statistic",
+     col = "lightgray",
+     border = "white")
+abline(v = T_obs, col = "blue", lwd = 2)
+text(x = T_obs, y = max(hist(T_perm, plot = FALSE)$counts) * 0.9,
+     labels = paste0("T_obs"),
+     pos = 4, col = "blue")
+
+print(p_value)
+```
+
+As before, we found that water is highly significant. We do the same while conditioning on water.
+
+### Conditioning on Lab and Water
+
+```{r}
+experimental_condition <- grepl("^[SD][WN][0-9]+$", proj3_data$label)
+df_exp <- proj3_data[experimental_condition, , drop = FALSE]
+df_exp$sunlight <- ifelse(substr(df_exp$label, 1, 1) == "S", 1, 0)
+df_exp$water <- ifelse(substr(df_exp$label, 2, 2) == "W", 1, 0)
+
+# Test statistic: weighted average of differences in proportions
+# Now stratified by lab × water
+sun_effect_stat_by_lab <- function(input_data) {
+  # Create lab × water strata
+  input_data$stratum <- interaction(input_data$lab, input_data$water, drop = TRUE)
+  strata <- sort(unique(input_data$stratum))
+  
+  valid_diffs <- c()
+  valid_wts <- c()
+  
+  for (stratum in strata) {
+    sub <- input_data[input_data$stratum == stratum, , drop = FALSE]
+    
+    # Check if stratum has both sunlight levels
+    sunlight_levels <- unique(sub$sunlight)
+    if (length(sunlight_levels) < 2) {
+      # Skip this stratum - cannot compute difference
+      next
+    }
+    
+    p_sun <- mean(sub$freshness[sub$sunlight == 1], na.rm = TRUE)
+    p_nosun <- mean(sub$freshness[sub$sunlight == 0], na.rm = TRUE)
+    
+    valid_diffs <- c(valid_diffs, p_sun - p_nosun)
+    valid_wts <- c(valid_wts, nrow(sub))
+  }
+  
+  # Weighted average across valid strata only
+  if (length(valid_diffs) == 0) return(NA)
+  sum(valid_diffs * valid_wts) / sum(valid_wts)
+}
+
+# Observed test statistic
+T_obs <- sun_effect_stat_by_lab(df_exp)
+cat("Observed T:", T_obs, "\n")
+
+# Print which strata are being used
+cat("\nStrata analysis:\n")
+df_exp$stratum <- interaction(df_exp$lab, df_exp$water, drop = TRUE)
+for (stratum in sort(unique(df_exp$stratum))) {
+  sub <- df_exp[df_exp$stratum == stratum, , drop = FALSE]
+  sunlight_levels <- unique(sub$sunlight)
+  lab_name <- sub$lab[1]
+  water_name <- ifelse(sub$water[1] == 1, "Water", "NoWater")
+  
+  if (length(sunlight_levels) == 2) {
+    cat(sprintf("  ✓ %s × %s: included (n=%d)\n", lab_name, water_name, nrow(sub)))
+  } else {
+    cat(sprintf("  ✗ %s × %s: EXCLUDED (only sunlight=%d, n=%d)\n", 
+                lab_name, water_name, sunlight_levels[1], nrow(sub)))
+  }
+}
+cat("\n")
+
+# Permutation test: permute sunlight within each lab × water stratum
+set.seed(82803)
+B <- 10000
+T_perm <- numeric(B)
+
+strata_levels <- unique(df_exp$stratum)
+
+for (b in seq_len(B)) {
+  dat_perm <- df_exp
+  
+  # Permute sunlight within each lab × water stratum
+  for (stratum in strata_levels) {
+    stratum_ind <- which(df_exp$stratum == stratum)
+    dat_perm$sunlight[stratum_ind] <- sample(df_exp$sunlight[stratum_ind])
+  }
+  
+  T_perm[b] <- sun_effect_stat_by_lab(dat_perm)
+}
+
+# One-sided p-value
+p_value <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+cat("One-sided p-value:", p_value, "\n")
+
+# Plot
+hist(T_perm, breaks = 30,
+     main = "Sunlight Effect Test (Conditioning on Lab × Water)",
+     xlab = "Test Statistic",
+     col = "lightgray",
+     border = "white")
+abline(v = T_obs, col = "red", lwd = 2)
+text(x = T_obs, y = max(hist(T_perm, plot = FALSE)$counts) * 0.9,
+     labels = paste0("T_obs"),
+     pos = 4, col = "red")
+
+print(p_value)
+```
+
+As before, we found that sunlight was not significant after conditioning on lab and water provided. Finally, we repeat our analysis in comparing fridge/darkness without water while conditioning on lab.
+
+### Conditioning on Lab - Fridge/Darkness no water
+
+We have the following:
+
+```{r}
+is_DW <- grepl("^DW[0-9]+$", proj3_data$label)
+is_FN <- grepl("^FN[0-9]+$", proj3_data$label)
+df_dwfn <- proj3_data[is_DW | is_FN, , drop = FALSE]
+
+# Create group variable: DW = "dark_water", FN = "fridge"
+df_dwfn$group <- ifelse(grepl("^FN", df_dwfn$label), "fridge", "dark_water")
+
+# Test statistic: weighted average of differences in proportions
+# Now stratified by lab
+dwfn_effect_stat_by_lab <- function(input_data) {
+  labs <- sort(unique(input_data$lab))
+  
+  valid_diffs <- c()
+  valid_wts <- c()
+  
+  for (lab in labs) {
+    sub <- input_data[input_data$lab == lab, , drop = FALSE]
+    
+    # Check if lab has both groups
+    groups <- unique(sub$group)
+    if (length(groups) < 2) {
+      # Skip this lab - cannot compute difference
+      next
+    }
+    
+    p_dark <- mean(sub$freshness[sub$group == "dark_water"], na.rm = TRUE)
+    p_fridge <- mean(sub$freshness[sub$group == "fridge"], na.rm = TRUE)
+    
+    valid_diffs <- c(valid_diffs, p_dark - p_fridge)
+    valid_wts <- c(valid_wts, nrow(sub))
+  }
+  
+  # Weighted average across valid labs only
+  if (length(valid_diffs) == 0) return(NA)
+  sum(valid_diffs * valid_wts) / sum(valid_wts)
+}
+
+# Observed test statistic
+T_obs <- dwfn_effect_stat_by_lab(df_dwfn)
+cat("Observed T:", T_obs, "\n")
+
+# Print which labs are being used
+cat("\nLab analysis:\n")
+for (lab in sort(unique(df_dwfn$lab))) {
+  sub <- df_dwfn[df_dwfn$lab == lab, , drop = FALSE]
+  groups <- unique(sub$group)
+  
+  if (length(groups) == 2) {
+    n_dw <- sum(sub$group == "dark_water")
+    n_fn <- sum(sub$group == "fridge")
+    cat(sprintf("  ✓ Lab %s: included (DW: n=%d, FN: n=%d)\n", lab, n_dw, n_fn))
+  } else {
+    cat(sprintf("  ✗ Lab %s: EXCLUDED (only %s, n=%d)\n", 
+                lab, groups[1], nrow(sub)))
+  }
+}
+cat("\n")
+
+# Permutation test: permute group within each lab
+set.seed(123)
+B <- 10000
+T_perm <- numeric(B)
+
+labs <- unique(df_dwfn$lab)
+
+for (b in seq_len(B)) {
+  dat_perm <- df_dwfn
+  
+  # Permute group within each lab
+  for (lab in labs) {
+    lab_ind <- which(df_dwfn$lab == lab)
+    dat_perm$group[lab_ind] <- sample(df_dwfn$group[lab_ind])
+  }
+  
+  T_perm[b] <- dwfn_effect_stat_by_lab(dat_perm)
+}
+
+# One-sided p-value (H1: DW > FN, i.e., darkness+water more fresh than fridge)
+p_value <- (sum(T_perm >= T_obs) + 1) / (B + 1)
+cat("One-sided p-value:", p_value, "\n")
+
+# Plot
+hist(T_perm, breaks = 30,
+     main = "DW vs FN Test (Conditioning on Lab)",
+     xlab = "Test Statistic (DW - FN Difference in Proportions)",
+     col = "lightgray",
+     border = "white")
+abline(v = T_obs, col = "darkgreen", lwd = 2)
+text(x = T_obs, y = max(hist(T_perm, plot = FALSE)$counts) * 0.9,
+     labels = paste0("T_obs"),
+     pos = 4, col = "darkgreen")
+
+print(p_value)
+```
+
+After conditioning on lab, we still found that there is no significant difference between the freshness of green onions that were grown in darkness with water versus those that were left in the fridge. Next, we proceed with permutation tests on the heights of our green onions.
+
+### Benjamini Hochberg for Multiple Tests
+
+To determine significance, we run our Benjamini-Hochberg procedure to account for the fact that three different nulls were assessed. We have the following:
+
+```{r}
+p_values <- c(
+  water_effect = 0.0009999,      
+  sunlight_effect = 0.50005,   
+  dw_vs_fn = 0.2912709          
+)
+
+# Apply Benjamini-Hochberg correction for FDR
+alpha <- 0.05  
+
+m <- length(p_values)  
+p_sorted <- sort(p_values)
+ranks <- rank(p_values)
+
+critical_values <- (1:m / m) * alpha
+
+reject <- p_sorted <= critical_values
+
+print(reject)
+```
+
+Thus, we conclude that water does have a significant effect on our gren onions after controlling for sunlight and lab.
+
 # 5. Height Permutation Tests
 
 In addition, we are also interested in the final (Day 9) length of the onions.
-
 
 ```{r}
 # Keep only SW/SN/DW/DN rows (pooling all labs)
@@ -1177,7 +1522,6 @@ sun_res <- perm_test_stratified_median(
 cat(sprintf("Sunlight effect — Observed T: %.4f\n", sun_res$T_obs))
 cat(sprintf("Sunlight effect — One-sided p-value: %s\n", sprintf('%.2e', sun_res$p_value)))
 ```
-
 
 The p-value suggests there is very strong evidence that, within each water condition, sunlight decreases the median day-9 height.  We can also produce a histogram for the distribution of permuted statistics. This is illustrated below:
 
@@ -1433,3 +1777,9 @@ if (length(dw_fn_lab_res$T_perm) > 0L && is.finite(dw_fn_lab_res$T_obs)) {
 - Overall, these findings consistently indicate that access to water and protection from direct sunlight both contribute positively to onion growth, while refrigeration (without water) inhibits it.
 
 - We recorded the lengths of the green onions every three days throughout the experiment. While the present analysis focuses on the day-9 measurements, further analyses could be conducted to study growth trajectories over time.
+
+- After conducting our experiment, our group discovered that the refrigerator in Chandler's lab was broken. Thus, we ran further tests while conditioning on lab to account for the broken refrigerator.
+
+
+
+
