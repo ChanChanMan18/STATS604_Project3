@@ -54,7 +54,7 @@ Assess how **light** and **watering** conditions affect green onion **height** a
 
 A plant is labeled **fresh = 1** if:
 1. **Leaf color** is good (vibrant/dark green), and  
-2. At least **two of three** visual checks are true: (i) **tip length ≤ 5 mm**, (ii) **no dead leaf**, (iii) **bulb is clear & white**. 
+2. At least **two of three** visual checks are true: (i) **tip length <= 5 mm**, (ii) **no dead leaf**, (iii) **bulb is clear & white**. 
 
 Otherwise, **fresh = 0**. 
 
